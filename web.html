@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Lost Object Finder</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: "Poppins", sans-serif;
+      background: linear-gradient(140deg, #090979, #4b1eff, #00bcd4);
+      background-size: 300% 300%;
+      animation: gradientMove 10s infinite alternate;
+      color: white;
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    @keyframes gradientMove {
+      0% { background-position: left; }
+      100% { background-position: right; }
+    }
+
+    .box {
+      width: 92%;
+      max-width: 480px;
+      margin-top: 30px;
+      background: rgba(255,255,255,0.10);
+      border-radius: 20px;
+      padding: 22px;
+      backdrop-filter: blur(15px);
+      box-shadow: 0 15px 45px rgba(0,0,0,0.5);
+    }
+
+    h1 {
+      margin: 0 0 18px;
+      text-align: center;
+      font-size: 1.8rem;
+      letter-spacing: 1px;
+    }
+
+    input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 14px;
+      border: none;
+      margin-bottom: 12px;
+      font-size: 1.1rem;
+      text-align: center;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    button {
+      flex: 1;
+      background: #22c55e;
+      padding: 12px;
+      border-radius: 14px;
+      border: none;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: white;
+    }
+
+    #voiceBtn {
+      background: #000102;
+    }
+
+    #status {
+      min-height: 26px;
+      font-size: 1rem;
+      margin: 10px 0;
+      text-align: center;
+    }
+
+    #resultImage {
+      width: 100%;
+      margin-top: 12px;
+      border-radius: 16px;
+      border: 3px solid rgba(248, 1, 1, 0.25);
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+<div class="box">
+  <h1>Lost Object Finder 🔍</h1>
+
+  <input id="objectInput" placeholder="Say or type object here" value="bottle" />
+
+  <div class="row">
+    <button id="findBtn">Search</button>
+    <button id="voiceBtn">🎤 Voice</button>
+  </div>
+
+  <p id="status"></p>
+  <img id="resultImage" />
+</div>
+
+<script>
+  // ===== Supabase Setup =====
+  const SUPABASE_URL = "https://ubsvfuqmlxtwfzegddsl.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVic3ZmdXFtbHh0d2Z6ZWdkZHNsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQxNzAxNzksImV4cCI6MjA3OTc0NjE3OX0.N4vjKUEzuwAdZ2ufPTJT13r6-d_FY87KMlgGlekHatE"; // 🔴 CHANGE THIS ONLY
+
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const objectInput = document.getElementById("objectInput");
+  const findBtn = document.getElementById("findBtn");
+  const voiceBtn = document.getElementById("voiceBtn");
+  const statusEl = document.getElementById("status");
+  const resultImage = document.getElementById("resultImage");
+
+  let currentCommandId = null;
+  let pollIntervalId = null;
+
+  // ===== Voice Detection =====
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRecognition) {
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+
+    voiceBtn.addEventListener("click", () => {
+      statusEl.textContent = "🎤 Listening...";
+      recognition.start();
+    });
+
+    recognition.addEventListener("result", e => {
+      objectInput.value = e.results[0][0].transcript;
+      statusEl.textContent = "✔ Voice recognised";
+    });
+  } else {
+    voiceBtn.style.display = "none";
+  }
+
+  // ===== Send Command to Supabase =====
+  async function sendCommand(object) {
+    if (!object) return alert("Enter an object");
+
+    if (pollIntervalId) clearInterval(pollIntervalId);
+    resultImage.style.display = "none";
+    statusEl.textContent = "Sending request...";
+
+    const { data, error } = await supabase
+      .from("commands")
+      .insert({ object_name: object.toLowerCase(), status: "pending" })
+      .select()
+      .single();
+
+    if (error) return statusEl.textContent = "Error sending command";
+
+    currentCommandId = data.id;
+    statusEl.textContent = `Searching for "${object}"...`;
+    pollIntervalId = setInterval(checkResult, 2500);
+  }
+
+  findBtn.addEventListener("click", () => {
+    sendCommand(objectInput.value.trim());
+  });
+
+  // ===== Poll for Results =====
+  async function checkResult() {
+    const { data } = await supabase
+      .from("detections")
+      .select("*")
+      .eq("command_id", currentCommandId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (!data || !data.length) return;
+
+    const result = data[0];
+
+    if (result.found === false) {
+      statusEl.textContent = "❌ Bottle not detected.";
+      resultImage.style.display = "none";
+      clearInterval(pollIntervalId);
+      return;
+    }
+
+    if (result.found === true && !result.image_url) {
+      statusEl.textContent = "Bottle detected ✔ — Loading image...";
+      return;
+    }
+
+    if (result.image_url) {
+      const conf = (result.confidence * 100).toFixed(1);
+      statusEl.textContent = `✔ Bottle detected (confidence: ${conf}%)`;
+      resultImage.src = result.image_url;
+      resultImage.style.display = "block";
+      clearInterval(pollIntervalId);
+    }
+  }
+</script>
+
+</body>
+</html>
